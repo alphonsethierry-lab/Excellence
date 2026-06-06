@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audit Excellence Commerciale S2</title>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+    <style>
+        :root { --primary: #e30613; }
+        body { background: #f8f9fa; }
+        .score-btn { width: 72px; height: 72px; font-weight: bold; border: 3px solid transparent; transition: all 0.2s; }
+        .score-btn.active { border-color: #000 !important; transform: scale(1.1); box-shadow: 0 0 0 4px rgba(227,6,19,0.3); }
+        .photo-preview { max-height: 110px; border-radius: 8px; cursor: pointer; transition: transform 0.2s; }
+        .photo-preview:hover { transform: scale(1.05); }
+        .anomaly-photo { max-height: 100px; border-radius: 6px; cursor: pointer; border: 2px solid #ddd; }
+        .question-title { font-size: 1.1rem; font-weight: 700; color: #000; }
+        .response-in-header { font-size: 0.95rem; font-weight: 700; padding: 3px 10px; border-radius: 6px; margin-left: 10px; }
+        .response-badge { font-size: 1.15rem; font-weight: 700; padding: 6px 14px; }
+        .anomaly-comment { color: #0066cc; font-style: italic; }
+        .photo-modal img { max-width: 95%; max-height: 90vh; border-radius: 8px; }
+    </style>
+</head>
+<body class="pb-5">
+    <div class="container-fluid py-4">
+        <h1 class="text-danger mb-1"><i class="fas fa-clipboard-check"></i> Audit Excellence Commerciale S2</h1>
+        <p class="text-muted">Grille d'auto-contrôle PDV</p>
+        
+        <div class="d-flex gap-3 mb-4 flex-wrap">
+            <input type="file" id="excelUpload" accept=".xlsx" class="form-control" style="max-width: 420px;">
+            <button onclick="exportSave()" class="btn btn-success"><i class="fas fa-download"></i> Sauvegarder</button>
+            <button onclick="loadBackup()" class="btn btn-primary"><i class="fas fa-upload"></i> Charger Sauvegarde</button>
+            <button onclick="resetAll()" class="btn btn-outline-danger">Tout réinitialiser</button>
+        </div>
+
+        <ul class="nav nav-tabs mb-4" id="mainTabs">
+            <li class="nav-item"><a class="nav-link active" onclick="showTab(0)">Thématiques</a></li>
+            <li class="nav-item"><a class="nav-link" onclick="showTab(1)">Questionnaire</a></li>
+            <li class="nav-item"><a class="nav-link" onclick="showTab(2)">Synthèse</a></li>
+        </ul>
+
+        <!-- Thématiques -->
+        <div id="tab0"><div class="row" id="thematic-list"></div></div>
+
+        <!-- Questionnaire -->
+        <div id="tab1" style="display:none;">
+            <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-3">
+                <h4 id="current-thematic-title" class="mb-0"></h4>
+                <div class="d-flex align-items-center gap-3">
+                    <select id="questionFilter" class="form-select w-auto" onchange="applyQuestionFilter()">
+                        <option value="all">Toutes les questions</option>
+                        <option value="OK">Répondu OK</option>
+                        <option value="PARTIAL">Répondu 1/3 ou 2/3</option>
+                        <option value="NOK">Répondu NOK</option>
+                        <option value="NA">Répondu N/A</option>
+                        <option value="unanswered">Non répondu</option>
+                    </select>
+                    <button onclick="toggleAllAccordions()" class="btn btn-outline-primary btn-sm">
+                        <i class="fas fa-expand-alt"></i> <span id="toggle-all-text">Tout dérouler</span>
+                    </button>
+                    <span id="progress-counter" class="badge bg-primary fs-5"></span>
+                    <button onclick="resetCurrent()" class="btn btn-outline-danger btn-sm">Réinitialiser</button>
+                </div>
+            </div>
+            <div id="questionnaire-container" class="accordion"></div>
+        </div>
+
+        <!-- Synthèse -->
+        <div id="tab2" style="display:none;">
+            <div class="mb-3">
+                <select id="filterThematic" class="form-select w-auto" onchange="renderSynthesis()">
+                    <option value="">Toutes les thématiques</option>
+                </select>
+            </div>
+            <div id="synthesis-content"></div>
+        </div>
+    </div>
+
+    <!-- Modal Photo -->
+    <div class="modal fade" id="photoModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content">
+                <div class="modal-header"><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+                <div class="modal-body text-center photo-modal">
+                    <img id="modalPhoto" src="" alt="Photo agrandie">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let workbook = null;
+        let allAudits = {};
+        let currentThematic = "";
+        let allQuestions = {};
+        let currentQuestionData = [];
+
+        if (localStorage.getItem('allAudits')) allAudits = JSON.parse(localStorage.getItem('allAudits'));
+
+        document.getElementById('excelUpload').addEventListener('change', e => {
+            if (!e.target.files[0]) return;
+            const reader = new FileReader();
+            reader.onload = ev => {
+                workbook = XLSX.read(ev.target.result, {type: 'array'});
+                renderThematicList();
+                populateFilterSelect();
+            };
+            reader.readAsArrayBuffer(e.target.files[0]);
+        });
+
+        function renderThematicList() {
+            const container = document.getElementById('thematic-list');
+            container.innerHTML = '';
+            workbook.SheetNames.forEach(name => {
+                if (name === "Assortiment FLEG-Vocation") return;
+                const div = document.createElement('div');
+                div.className = "col-md-4 col-lg-3 mb-3";
+                div.innerHTML = `<div class="card h-100 shadow-sm" onclick="loadThematic('${name}')"><div class="card-body"><h5 class="text-danger">${name}</h5></div></div>`;
+                container.appendChild(div);
+            });
+        }
+
+        function populateFilterSelect() {
+            const select = document.getElementById('filterThematic');
+            const current = select.value;
+            select.innerHTML = '<option value="">Toutes les thématiques</option>';
+            const set = new Set();
+            if (workbook) workbook.SheetNames.forEach(n => { if (n !== "Assortiment FLEG-Vocation") set.add(n); });
+            Object.keys(allAudits).forEach(n => set.add(n));
+            set.forEach(name => {
+                const opt = document.createElement('option'); opt.value = name; opt.textContent = name;
+                select.appendChild(opt);
+            });
+            if (current && set.has(current)) select.value = current;
+        }
+
+        function loadThematic(sheetName) {
+            currentThematic = sheetName;
+            if (!allAudits[sheetName]) allAudits[sheetName] = {responses: {}, comments: {}, photos: {}};
+            document.getElementById('current-thematic-title').textContent = sheetName;
+            showTab(1);
+            renderQuestionnaire(sheetName);
+        }
+
+        function renderQuestionnaire(sheetName) {
+            const ws = workbook.Sheets[sheetName];
+            currentQuestionData = XLSX.utils.sheet_to_json(ws, {header: 1, defval: ""});
+            renderFilteredQuestions(sheetName, 'all');
+        }
+
+        function renderFilteredQuestions(sheetName, filterType) {
+            const container = document.getElementById('questionnaire-container');
+            container.innerHTML = '';
+            allQuestions[sheetName] = {};
+
+            currentQuestionData.forEach((row, i) => {
+                if (i < 4 || !row[0] || !row[2]) return;
+                const num = String(row[0]).trim();
+                if (!/^\d/.test(num)) return;
+                const questionText = String(row[2]).trim();
+                if (questionText.length < 5) return;
+
+                const qId = `q-${num}`;
+                const response = allAudits[sheetName].responses[qId];
+
+                if (filterType !== 'all') {
+                    if (filterType === 'unanswered' && response) return;
+                    if (filterType !== 'unanswered' && response !== filterType) return;
+                }
+
+                allQuestions[sheetName][qId] = questionText;
+
+                const card = document.createElement('div');
+                card.className = 'accordion-item';
+                card.innerHTML = `
+                    <h2 class="accordion-header">
+                        <button class="accordion-button collapsed" data-bs-toggle="collapse" data-bs-target="#c${qId}">
+                            <strong>${num}</strong> — ${questionText.substring(0,85)}${questionText.length>85?'...':''}
+                            <span class="response-in-header ms-3" id="resp-${qId}"></span>
+                        </button>
+                    </h2>
+                    <div id="c${qId}" class="accordion-collapse collapse">
+                        <div class="accordion-body">
+                            <p class="question-title">${num}. ${questionText}</p>
+                            <div class="d-flex flex-wrap gap-2 mb-3" id="scores-${qId}"></div>
+                            <textarea class="form-control" rows="3" placeholder="Commentaire..." onchange="saveComment('${sheetName}', '${qId}', this.value)">${allAudits[sheetName].comments[qId]||''}</textarea>
+                            
+                            <!-- Deux boutons séparés -->
+                            <div class="mt-3">
+                                <button onclick="addPhotoFromGallery('${sheetName}', '${qId}')" class="btn btn-outline-primary btn-sm me-2">
+                                    <i class="fas fa-upload"></i> Ajouter photo
+                                </button>
+                                <button onclick="takePhoto('${sheetName}', '${qId}')" class="btn btn-outline-success btn-sm">
+                                    <i class="fas fa-camera"></i> Prendre une photo
+                                </button>
+                            </div>
+                            <div id="photos-${qId}" class="d-flex flex-wrap gap-2 mt-3"></div>
+                        </div>
+                    </div>`;
+                container.appendChild(card);
+
+                setTimeout(() => {
+                    renderScoreButtons(sheetName, qId, row);
+                    updateResponseInHeader(sheetName, qId);
+                }, 50);
+                renderPhotos(sheetName, qId);
+            });
+            updateProgress(sheetName);
+        }
+
+        // === NOUVEAUX FONCTIONS POUR LES DEUX BOUTONS ===
+        function addPhotoFromGallery(sheetName, qId) {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'image/*';
+            input.multiple = true;
+            input.onchange = handlePhotoFiles(sheetName, qId);
+            input.click();
+        }
+
+        function takePhoto(sheetName, qId) {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'image/*';
+            input.capture = 'environment';
+            input.onchange = handlePhotoFiles(sheetName, qId);
+            input.click();
+        }
+
+        function handlePhotoFiles(sheetName, qId) {
+            return e => {
+                Array.from(e.target.files).forEach(file => {
+                    const reader = new FileReader();
+                    reader.onload = ev => {
+                        if (!allAudits[sheetName].photos[qId]) allAudits[sheetName].photos[qId] = [];
+                        allAudits[sheetName].photos[qId].push(ev.target.result);
+                        renderPhotos(sheetName, qId);
+                        autoSave();
+                    };
+                    reader.readAsDataURL(file);
+                });
+            };
+        }
+
+        function renderPhotos(sheetName, qId) {
+            const cont = document.getElementById(`photos-${qId}`);
+            cont.innerHTML = '';
+            (allAudits[sheetName].photos[qId] || []).forEach((src, i) => {
+                const div = document.createElement('div');
+                div.className = "position-relative d-inline-block me-2";
+                div.innerHTML = `<img src="${src}" class="photo-preview" onclick="showPhotoModal('${src}')">
+                    <button class="btn btn-danger btn-sm position-absolute top-0 end-0" onclick="removePhoto('${sheetName}','${qId}',${i});event.stopImmediatePropagation()">×</button>`;
+                cont.appendChild(div);
+            });
+        }
+
+        function showPhotoModal(src) {
+            document.getElementById('modalPhoto').src = src;
+            new bootstrap.Modal(document.getElementById('photoModal')).show();
+        }
+
+        function removePhoto(sheetName, qId, idx) {
+            allAudits[sheetName].photos[qId].splice(idx, 1);
+            renderPhotos(sheetName, qId);
+            autoSave();
+        }
+
+        // === Autres fonctions (inchangées) ===
+        function renderScoreButtons(sheetName, qId, row) {
+            const container = document.getElementById(`scores-${qId}`);
+            container.innerHTML = '';
+            const options = [
+                {val:'OK', text:'OK', color:'success'},
+                {val:'PARTIAL', text:'1/3', color:'warning'},
+                {val:'PARTIAL2', text:'2/3', color:'warning'},
+                {val:'NOK', text:'NOK', color:'danger'},
+                {val:'NA', text:'N/A', color:'secondary'}
+            ];
+            options.forEach(opt => {
+                const active = allAudits[sheetName].responses[qId] === opt.val;
+                const btn = document.createElement('button');
+                btn.className = `btn btn-${opt.color} score-btn ${active ? 'active' : ''}`;
+                btn.textContent = opt.text;
+                btn.onclick = () => {
+                    allAudits[sheetName].responses[qId] = opt.val;
+                    renderScoreButtons(sheetName, qId, row);
+                    updateResponseInHeader(sheetName, qId);
+                    updateProgress(sheetName);
+                    autoSave();
+                };
+                container.appendChild(btn);
+            });
+        }
+
+        function updateResponseInHeader(sheetName, qId) {
+            const span = document.getElementById(`resp-${qId}`);
+            if (!span) return;
+            const resp = allAudits[sheetName].responses[qId];
+            if (resp) {
+                let cls = '', txt = resp;
+                if (resp === 'OK') cls = 'bg-success';
+                else if (resp === 'PARTIAL' || resp === 'PARTIAL2') { cls = 'bg-warning text-dark'; txt = resp === 'PARTIAL2' ? '2/3' : '1/3'; }
+                else if (resp === 'NOK') cls = 'bg-danger';
+                else if (resp === 'NA') cls = 'bg-secondary';
+                span.innerHTML = `<span class="badge ${cls}">${txt}</span>`;
+            } else {
+                span.innerHTML = '<span class="badge bg-light text-muted">Non répondu</span>';
+            }
+        }
+
+        function applyQuestionFilter() {
+            renderFilteredQuestions(currentThematic, document.getElementById('questionFilter').value);
+        }
+
+        function toggleAllAccordions() {
+            const collapses = document.querySelectorAll('#questionnaire-container .accordion-collapse');
+            const btn = document.getElementById('toggle-all-text');
+            const expand = Array.from(collapses).some(c => !c.classList.contains('show'));
+            collapses.forEach(c => {
+                const bs = new bootstrap.Collapse(c, {toggle: false});
+                expand ? bs.show() : bs.hide();
+            });
+            btn.textContent = expand ? "Tout replier" : "Tout dérouler";
+        }
+
+        function saveComment(sheetName, qId, text) {
+            allAudits[sheetName].comments[qId] = text;
+            autoSave();
+        }
+
+        function updateProgress(sheetName) {
+            const total = document.querySelectorAll('.accordion-item').length;
+            const answered = Object.keys(allAudits[sheetName]?.responses || {}).length;
+            document.getElementById('progress-counter').textContent = `${answered}/${total}`;
+        }
+
+        function autoSave() {
+            localStorage.setItem('allAudits', JSON.stringify(allAudits));
+        }
+
+        function exportSave() {
+            const data = {date: new Date().toISOString(), allAudits};
+            const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body><script>window.savedAudit=${JSON.stringify(data)};<\/script></body></html>`;
+            const blob = new Blob([html], {type:'text/html'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `Audit_Sauvegarde_${new Date().toISOString().slice(0,10)}.html`; a.click();
+        }
+
+        function loadBackup() {
+            const input = document.createElement('input');
+            input.type = 'file'; input.accept = '.html';
+            input.onchange = e => {
+                const reader = new FileReader();
+                reader.onload = ev => {
+                    try {
+                        const match = ev.target.result.match(/window\.savedAudit\s*=\s*(\{.*?\});/s);
+                        if (match) {
+                            const saved = JSON.parse(match[1]);
+                            allAudits = saved.allAudits || {};
+                            localStorage.setItem('allAudits', JSON.stringify(allAudits));
+                            alert("✅ Sauvegarde chargée !");
+                            populateFilterSelect();
+                            showTab(2);
+                        }
+                    } catch(e) { alert("Erreur lors du chargement"); }
+                };
+                reader.readAsText(e.target.files[0]);
+            };
+            input.click();
+        }
+
+        function showTab(n) {
+            document.querySelectorAll('#mainTabs .nav-link').forEach((el,i) => el.classList.toggle('active', i===n));
+            document.getElementById('tab0').style.display = n===0 ? 'block' : 'none';
+            document.getElementById('tab1').style.display = n===1 ? 'block' : 'none';
+            document.getElementById('tab2').style.display = n===2 ? 'block' : 'none';
+            if (n === 2) { populateFilterSelect(); renderSynthesis(); }
+        }
+
+        function renderSynthesis() {
+            const filter = document.getElementById('filterThematic').value;
+            const content = document.getElementById('synthesis-content');
+            content.innerHTML = '<h4 class="mb-4">Synthèse des Audits</h4>';
+
+            const toShow = filter ? [filter] : Object.keys(allAudits);
+            if (toShow.length === 0) {
+                content.innerHTML += '<p class="text-muted">Aucune donnée disponible.</p>';
+                return;
+            }
+
+            toShow.forEach(thematic => {
+                if (!allAudits[thematic]) return;
+                const audit = allAudits[thematic];
+                let total=0, ok=0, partial=0, nok=0, na=0;
+                const anomalies = [];
+
+                Object.keys(audit.responses).forEach(qId => {
+                    const r = audit.responses[qId];
+                    total++;
+                    if (r==='OK') ok++;
+                    else if (r==='PARTIAL' || r==='PARTIAL2') partial++;
+                    else if (r==='NOK') nok++;
+                    else if (r==='NA') na++;
+                    if (r==='PARTIAL' || r==='PARTIAL2' || r==='NOK') {
+                        anomalies.push({
+                            qId, resp: r==='PARTIAL2'?'2/3':r,
+                            question: allQuestions[thematic]?.[qId] || qId,
+                            comment: audit.comments[qId] || '',
+                            photos: audit.photos[qId] || []
+                        });
+                    }
+                });
+
+                const compliance = (total - na) > 0 ? Math.round((ok / (total-na))*100) : 0;
+
+                let html = `<div class="card mb-5"><div class="card-header bg-light d-flex justify-content-between align-items-center"><strong>${thematic}</strong><span class="badge bg-primary fs-5">${compliance}% de conformité</span></div><div class="card-body"><div class="row"><div class="col-md-4"><canvas id="chart-${thematic.replace(/\s+/g,'')}" width="200" height="200"></canvas></div><div class="col-md-8"><div class="row text-center mb-4"><div class="col-3"><strong>${total}</strong><br>Total</div><div class="col-3 text-success"><strong>${ok}</strong><br>OK</div><div class="col-3 text-warning"><strong>${partial}</strong><br>Partiel</div><div class="col-3 text-danger"><strong>${nok}</strong><br>NOK</div></div><h6 class="mb-3">Anomalies (${anomalies.length})</h6><div class="list-group">`;
+
+                anomalies.forEach(a => {
+                    html += `<div class="list-group-item"><div class="d-flex justify-content-between"><div class="flex-grow-1"><strong>${a.qId}</strong> — ${a.question}</div><span class="badge bg-${a.resp==='NOK'?'danger':'warning'}">${a.resp}</span></div>${a.comment?`<p class="anomaly-comment small">${a.comment}</p>`:''}${a.photos.length?`<div class="d-flex flex-wrap gap-2 mt-2">${a.photos.map(p=>`<img src="${p}" class="anomaly-photo" onclick="showPhotoModal('${p}')">`).join('')}</div>`:''}</div>`;
+                });
+
+                html += `</div></div></div></div>`;
+                content.innerHTML += html;
+
+                setTimeout(() => {
+                    const ctx = document.getElementById(`chart-${thematic.replace(/\s+/g,'')}`);
+                    if (ctx) new Chart(ctx, {type: 'doughnut', data: {labels: ['OK','Partiel','NOK','N/A'], datasets: [{data: [ok,partial,nok,na], backgroundColor: ['#28a745','#ffc107','#dc3545','#6c757d']}]}, options: {responsive: true, plugins: {legend: {position: 'bottom'}}}});
+                }, 200);
+            });
+        }
+
+        function resetCurrent() {
+            if (confirm("Réinitialiser cette thématique ?")) {
+                allAudits[currentThematic] = {responses:{}, comments:{}, photos:{}};
+                renderQuestionnaire(currentThematic);
+            }
+        }
+
+        function resetAll() {
+            if (confirm("Tout effacer ?")) {
+                allAudits = {};
+                localStorage.removeItem('allAudits');
+                location.reload();
+            }
+        }
+
+        window.onload = () => {
+            populateFilterSelect();
+            console.log("%cAudit App chargée", "color:#e30613;font-weight:bold");
+        };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
